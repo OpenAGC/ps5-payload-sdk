@@ -93,6 +93,13 @@ int kernel_proc_setlong(pid_t pid, intptr_t addr, long val);
 int kernel_get_vmem_protection(pid_t pid, intptr_t addr, size_t len);
 int kernel_set_vmem_protection(pid_t pid, intptr_t addr, size_t len, int prot);
 int kernel_mprotect(pid_t pid, intptr_t addr, size_t size, int prot);
+int kernel_mprotect_exact(pid_t pid, intptr_t addr, size_t size, int prot);
+int kernel_mprotect_exact_with_vm_lock_held(pid_t pid, intptr_t addr,
+                                           size_t size, int prot);
+int kernel_mprotect_with_vm_lock_held(pid_t pid, intptr_t addr,
+                                     size_t size, int prot);
+void kernel_vm_operation_lock(void);
+void kernel_vm_operation_unlock(void);
 
 int kernel_overlap_sockets(pid_t pid, int master_sock, int victim_sock);
 

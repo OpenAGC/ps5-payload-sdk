@@ -95,7 +95,12 @@ typedef struct rtld_so_lib {
 static void*
 mmap(void* addr, unsigned long len, int prot, int flags, int fd,
      unsigned long offset) {
-  return (void*)__crt_syscall(SYS_mmap, addr, len, prot, flags, fd, offset);
+  void* result;
+
+  kernel_vm_operation_lock();
+  result = (void*)__crt_syscall(SYS_mmap, addr, len, prot, flags, fd, offset);
+  kernel_vm_operation_unlock();
+  return result;
 }
 
 
@@ -107,7 +112,11 @@ mprotect(void* addr, unsigned long size, int prot) {
   if((prot & PROT_EXEC)) {
     return kernel_mprotect(-1, (unsigned long)addr, size, prot);
   } else {
-    return (int)__crt_syscall(SYS_mprotect, addr, size, prot);
+    int result;
+    kernel_vm_operation_lock();
+    result = (int)__crt_syscall(SYS_mprotect, addr, size, prot);
+    kernel_vm_operation_unlock();
+    return result;
   }
 }
 
@@ -117,7 +126,12 @@ mprotect(void* addr, unsigned long size, int prot) {
  **/
 static int
 munmap(void* addr, unsigned long len) {
-  return (int)__crt_syscall(SYS_munmap, addr, len);
+  int result;
+
+  kernel_vm_operation_lock();
+  result = (int)__crt_syscall(SYS_munmap, addr, len);
+  kernel_vm_operation_unlock();
+  return result;
 }
 
 

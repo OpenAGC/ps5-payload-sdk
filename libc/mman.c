@@ -20,11 +20,16 @@ along with this program; see the file COPYING. If not, see
 #include <sys/mman.h>
 #include <sys/syscall.h>
 
+#define VM_PAGE_SIZE 0x4000UL
 
 /**
  * shared objects do not link with crt1.o, declare deps as weak.
  **/
 __attribute__((weak)) int kernel_mprotect(pid_t, intptr_t, size_t, int);
+__attribute__((weak)) int kernel_mprotect_exact_with_vm_lock_held(
+    pid_t, intptr_t, size_t, int);
+__attribute__((weak)) void kernel_vm_operation_lock(void);
+__attribute__((weak)) void kernel_vm_operation_unlock(void);
 
 
 static long
@@ -72,14 +77,42 @@ sys_mprotect(const void* addr, size_t size, int prot) {
 }
 
 
+static int
+sys_munmap(void* addr, size_t size) {
+  long ret;
+
+  if((ret=__syscall6(SYS_munmap, (long)addr, size, 0, 0, 0, 0)) < 0) {
+    errno = -ret;
+    return -1;
+  }
+
+  return (int)ret;
+}
+
+
+static int
+vm_operation_lock_available(void) {
+  return kernel_vm_operation_lock && kernel_vm_operation_unlock;
+}
+
+
 int
 mprotect(const void* addr, size_t size, int prot) {
   if(!(prot & PROT_EXEC)) {
-    return sys_mprotect(addr, size, prot);
+    int ret;
+    int locked = vm_operation_lock_available();
+    if(locked) {
+      kernel_vm_operation_lock();
+    }
+    ret = sys_mprotect(addr, size, prot);
+    if(locked) {
+      kernel_vm_operation_unlock();
+    }
+    return ret;
   }
 
   errno = 0;
-  if(!kernel_mprotect(-1, (intptr_t)addr, size, prot)) {
+  if(kernel_mprotect && !kernel_mprotect(-1, (intptr_t)addr, size, prot)) {
     return 0;
   }
 
@@ -95,24 +128,83 @@ mprotect(const void* addr, size_t size, int prot) {
 void*
 mmap(void* addr, size_t size, int prot, int flags, int fd, off_t offset) {
   void *map_addr;
+  int locked = vm_operation_lock_available();
+  size_t exec_protect_size = size;
 
-  if(!(prot & PROT_EXEC)) {
-    return sys_mmap(addr, size, prot, flags, fd, offset);
+  if(locked) {
+    kernel_vm_operation_lock();
   }
+  if(!(prot & PROT_EXEC)) {
+    map_addr = sys_mmap(addr, size, prot, flags, fd, offset);
+    if(locked) {
+      kernel_vm_operation_unlock();
+    }
+    return map_addr;
+  }
+
+  if(size > (size_t)-1-(VM_PAGE_SIZE-1)) {
+    if(locked) {
+      kernel_vm_operation_unlock();
+    }
+    errno = EOVERFLOW;
+    return MAP_FAILED;
+  }
+  exec_protect_size = (size + VM_PAGE_SIZE - 1) & ~(VM_PAGE_SIZE - 1);
 
   prot &= ~PROT_EXEC;
   if((map_addr=sys_mmap(addr, size, prot, flags, fd, offset)) == MAP_FAILED) {
+    if(locked) {
+      kernel_vm_operation_unlock();
+    }
     return map_addr;
   }
 
   prot |= PROT_EXEC;
   errno = 0;
-  if(kernel_mprotect(-1, (intptr_t)map_addr, size, prot)) {
+  int protect_result;
+  if(locked && kernel_mprotect_exact_with_vm_lock_held) {
+    protect_result = kernel_mprotect_exact_with_vm_lock_held(
+        -1, (intptr_t)map_addr, exec_protect_size, prot);
+  } else {
+    if(locked) {
+      kernel_vm_operation_unlock();
+      locked = 0;
+    }
+    protect_result = kernel_mprotect
+        ? kernel_mprotect(-1, (intptr_t)map_addr, size, prot) : -1;
+  }
+  if(protect_result) {
     int error = errno;
-    munmap(map_addr, size);
+    if(!locked && vm_operation_lock_available()) {
+      kernel_vm_operation_lock();
+      locked = 1;
+    }
+    sys_munmap(map_addr, size);
+    if(locked) {
+      kernel_vm_operation_unlock();
+    }
     errno = error ? error : EPERM;
     return MAP_FAILED;
   }
 
+  if(locked) {
+    kernel_vm_operation_unlock();
+  }
   return map_addr;
+}
+
+
+int
+munmap(void* addr, size_t size) {
+  int ret;
+  int locked = vm_operation_lock_available();
+
+  if(locked) {
+    kernel_vm_operation_lock();
+  }
+  ret = sys_munmap(addr, size);
+  if(locked) {
+    kernel_vm_operation_unlock();
+  }
+  return ret;
 }

@@ -160,5 +160,12 @@ unsigned long kernel_dynlib_dlsym(int pid, unsigned int handle, const char* sym)
 int kernel_dynlib_path(int pid, unsigned int handle, char* path, unsigned long size);
 
 int kernel_mprotect(int pid, unsigned long addr, unsigned long size, int prot);
+int kernel_mprotect_exact(int pid, unsigned long addr, unsigned long size, int prot);
+int kernel_mprotect_exact_with_vm_lock_held(int pid, unsigned long addr,
+                                            unsigned long size, int prot);
+int kernel_mprotect_with_vm_lock_held(int pid, unsigned long addr,
+                                      unsigned long size, int prot);
+void kernel_vm_operation_lock(void);
+void kernel_vm_operation_unlock(void);
 
 int __kernel_init(payload_args_t* args);
