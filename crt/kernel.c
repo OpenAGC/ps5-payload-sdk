@@ -112,8 +112,34 @@ static unsigned long pipe_addr = 0;
 static int rw_pipe[2] = {-1, -1};
 static int rw_pair[2] = {-1, -1};
 
+/*
+ * kernel_copyin() and kernel_copyout() borrow one pipe and reprogram its
+ * kernel-side fields before every transfer.  They therefore cannot overlap
+ * with each other.  A VM protection update performs many such transfers
+ * while walking the process' VM-entry tree, so kernel_mprotect() takes the
+ * same lock for its entire operation and calls explicit unlocked helpers.
+ */
+static volatile int kernel_pipe_lock = 0;
+
 #define MASTER_SOCK rw_pair[0]
 #define VICTIM_SOCK rw_pair[1]
+
+
+static void
+kernel_pipe_lock_acquire(void) {
+  while(__sync_lock_test_and_set(&kernel_pipe_lock, 1)) {
+    while(kernel_pipe_lock) {
+    }
+  }
+  __sync_synchronize();
+}
+
+
+static void
+kernel_pipe_lock_release(void) {
+  __sync_synchronize();
+  __sync_lock_release(&kernel_pipe_lock);
+}
 
 
 /**
@@ -536,19 +562,20 @@ kernel_write(unsigned long kaddr, void* data, unsigned long len) {
 }
 
 
-int
-kernel_copyin(const void *uaddr, unsigned long kaddr, unsigned long len) {
+static int
+kernel_copyin_unlocked(const void *uaddr, unsigned long kaddr, unsigned long len) {
   kernel_pipebuf_t buf = {0};
+  int ret = -1;
 
   if(!kaddr || !uaddr || !len) {
     SET_ERRNO(EINVAL);
-    return -1;
+    goto out;
   }
 
   buf.flags.reserved = 0x40000000;
 
   if(kernel_write(pipe_addr, &buf, sizeof(buf))) {
-    return -1;
+    goto out;
   }
 
   buf.pbuf.size = 0x40000000;
@@ -556,31 +583,34 @@ kernel_copyin(const void *uaddr, unsigned long kaddr, unsigned long len) {
   buf.pbuf.reserved = 0;
 
   if(kernel_write(pipe_addr + 12, &buf, sizeof(buf))) {
-    return -1;
+    goto out;
   }
 
   if(__crt_syscall(SYS_write, rw_pipe[1], uaddr, len) < 0) {
-    return -1;
+    goto out;
   }
 
-  return 0;
+  ret = 0;
+out:
+  return ret;
 }
 
 
-int
-kernel_copyout(unsigned long kaddr, void *uaddr, unsigned long len) {
+static int
+kernel_copyout_unlocked(unsigned long kaddr, void *uaddr, unsigned long len) {
   kernel_pipebuf_t buf = {0};
+  int ret = -1;
 
   if(!kaddr || !uaddr || !len) {
     SET_ERRNO(EINVAL);
-    return -1;
+    goto out;
   }
 
   buf.flags.cnt = 0x40000000;
   buf.flags.in = 0x40000000;
 
   if(kernel_write(pipe_addr, &buf, sizeof(buf))) {
-    return -1;
+    goto out;
   }
 
   buf.pbuf.size = 0x40000000;
@@ -588,14 +618,38 @@ kernel_copyout(unsigned long kaddr, void *uaddr, unsigned long len) {
   buf.pbuf.reserved = 0;
 
   if(kernel_write(pipe_addr + 12, &buf, sizeof(buf))) {
-    return -1;
+    goto out;
   }
 
   if(__crt_syscall(SYS_read, rw_pipe[0], uaddr, len) < 0) {
-    return -1;
+    goto out;
   }
 
-  return 0;
+  ret = 0;
+out:
+  return ret;
+}
+
+
+int
+kernel_copyin(const void *uaddr, unsigned long kaddr, unsigned long len) {
+  int ret;
+
+  kernel_pipe_lock_acquire();
+  ret = kernel_copyin_unlocked(uaddr, kaddr, len);
+  kernel_pipe_lock_release();
+  return ret;
+}
+
+
+int
+kernel_copyout(unsigned long kaddr, void *uaddr, unsigned long len) {
+  int ret;
+
+  kernel_pipe_lock_acquire();
+  ret = kernel_copyout_unlocked(kaddr, uaddr, len);
+  kernel_pipe_lock_release();
+  return ret;
 }
 
 int
@@ -692,8 +746,8 @@ kernel_get_root_vnode(void) {
 }
 
 
-unsigned long
-kernel_get_proc(int pid) {
+static unsigned long
+kernel_get_proc_unlocked(int pid) {
   unsigned int other_pid = 0;
   unsigned long addr = 0;
   unsigned long next = 0;
@@ -708,13 +762,13 @@ kernel_get_proc(int pid) {
     }
   }
 
-  if(kernel_copyout(KERNEL_ADDRESS_ALLPROC, &addr, sizeof(addr))) {
+  if(kernel_copyout_unlocked(KERNEL_ADDRESS_ALLPROC, &addr, sizeof(addr))) {
     return 0;
   }
 
   while(addr) {
-    if(kernel_copyout(addr + KERNEL_OFFSET_PROC_P_PID, &other_pid,
-		      sizeof(other_pid))) {
+    if(kernel_copyout_unlocked(addr + KERNEL_OFFSET_PROC_P_PID, &other_pid,
+			       sizeof(other_pid))) {
       return 0;
     }
 
@@ -722,7 +776,7 @@ kernel_get_proc(int pid) {
       break;
     }
 
-    if(kernel_copyout(addr, &next, sizeof(next))) {
+    if(kernel_copyout_unlocked(addr, &next, sizeof(next))) {
       return 0;
     }
 
@@ -743,6 +797,17 @@ kernel_get_proc(int pid) {
   proc_cache[proc_cache_counter].addr = addr;
 
   return addr;
+}
+
+
+unsigned long
+kernel_get_proc(int pid) {
+  unsigned long proc;
+
+  kernel_pipe_lock_acquire();
+  proc = kernel_get_proc_unlocked(pid);
+  kernel_pipe_lock_release();
+  return proc;
 }
 
 
@@ -1391,46 +1456,46 @@ kernel_get_proc_filedesc(int pid) {
 }
 
 
-unsigned long
-kernel_get_vmem_entry(int pid, unsigned long addr) {
+static unsigned long
+kernel_get_vmem_entry_unlocked(int pid, unsigned long addr) {
   unsigned long vm_map_entry_addr;
   unsigned long vmspace_addr;
   unsigned long proc_addr;
   unsigned long start;
   unsigned long end;
 
-  if(!(proc_addr=kernel_get_proc(pid))) {
+  if(!(proc_addr=kernel_get_proc_unlocked(pid))) {
     return 0;
   }
 
-  if(kernel_copyout(proc_addr + KERNEL_OFFSET_PROC_P_VMSPACE,
-                    &vmspace_addr, sizeof(vmspace_addr))) {
+  if(kernel_copyout_unlocked(proc_addr + KERNEL_OFFSET_PROC_P_VMSPACE,
+                             &vmspace_addr, sizeof(vmspace_addr))) {
     return 0;
   }
 
-  if(kernel_copyout(vmspace_addr + KERNEL_OFFSET_VMSPACE_P_ROOT,
-		    &vm_map_entry_addr, sizeof(vm_map_entry_addr))) {
+  if(kernel_copyout_unlocked(vmspace_addr + KERNEL_OFFSET_VMSPACE_P_ROOT,
+			     &vm_map_entry_addr, sizeof(vm_map_entry_addr))) {
     return 0;
   }
 
   while(vm_map_entry_addr) {
-    if(kernel_copyout(vm_map_entry_addr + 0x20, &start, sizeof(start))) {
+    if(kernel_copyout_unlocked(vm_map_entry_addr + 0x20, &start, sizeof(start))) {
       return 0;
     }
-    if(kernel_copyout(vm_map_entry_addr + 0x28, &end, sizeof(end))) {
+    if(kernel_copyout_unlocked(vm_map_entry_addr + 0x28, &end, sizeof(end))) {
       return 0;
     } 
 
     if(addr < start) {
       // left
-      if(kernel_copyout(vm_map_entry_addr + 0x10, &vm_map_entry_addr,
-                        sizeof(vm_map_entry_addr))) {
+      if(kernel_copyout_unlocked(vm_map_entry_addr + 0x10, &vm_map_entry_addr,
+                                 sizeof(vm_map_entry_addr))) {
         return 0;
       }
     } else if(addr >= end) {
       // right
-      if(kernel_copyout(vm_map_entry_addr + 0x18, &vm_map_entry_addr,
-                        sizeof(vm_map_entry_addr))) {
+      if(kernel_copyout_unlocked(vm_map_entry_addr + 0x18, &vm_map_entry_addr,
+                                 sizeof(vm_map_entry_addr))) {
         return 0;
       }
     } else {
@@ -1443,20 +1508,31 @@ kernel_get_vmem_entry(int pid, unsigned long addr) {
 }
 
 
-int
-kernel_get_vmem_protection(int pid, unsigned long addr, unsigned long len) {
+unsigned long
+kernel_get_vmem_entry(int pid, unsigned long addr) {
+  unsigned long vm_entry;
+
+  kernel_pipe_lock_acquire();
+  vm_entry = kernel_get_vmem_entry_unlocked(pid, addr);
+  kernel_pipe_lock_release();
+  return vm_entry;
+}
+
+
+static int
+kernel_get_vmem_protection_unlocked(int pid, unsigned long addr, unsigned long len) {
   unsigned long vm_entry;
   unsigned char vm_prot;
   unsigned long start;
   int first = 1;
   int prot = -1;
 
-  if(!(vm_entry=kernel_get_vmem_entry(pid, addr))) {
+  if(!(vm_entry=kernel_get_vmem_entry_unlocked(pid, addr))) {
     return -1;
   }
 
   while(vm_entry) {
-    if(kernel_copyout(vm_entry + 0x20, &start, sizeof(start))) {
+    if(kernel_copyout_unlocked(vm_entry + 0x20, &start, sizeof(start))) {
       return -1;
     }
 
@@ -1465,7 +1541,7 @@ kernel_get_vmem_protection(int pid, unsigned long addr, unsigned long len) {
     }
     first = 0;
 
-    if(kernel_copyout(vm_entry + 0x64, &vm_prot, sizeof(vm_prot))) {
+    if(kernel_copyout_unlocked(vm_entry + 0x64, &vm_prot, sizeof(vm_prot))) {
       return -1;
     }
     if(prot < 0) {
@@ -1475,7 +1551,7 @@ kernel_get_vmem_protection(int pid, unsigned long addr, unsigned long len) {
       return -1;
     }
 
-    if(kernel_copyout(vm_entry + 0x08, &vm_entry, sizeof(vm_entry))) {
+    if(kernel_copyout_unlocked(vm_entry + 0x08, &vm_entry, sizeof(vm_entry))) {
       return -1;
     }
   }
@@ -1489,7 +1565,18 @@ kernel_get_vmem_protection(int pid, unsigned long addr, unsigned long len) {
 
 
 int
-kernel_set_vmem_protection(int pid, unsigned long addr, unsigned long len, int prot) {
+kernel_get_vmem_protection(int pid, unsigned long addr, unsigned long len) {
+  int prot;
+
+  kernel_pipe_lock_acquire();
+  prot = kernel_get_vmem_protection_unlocked(pid, addr, len);
+  kernel_pipe_lock_release();
+  return prot;
+}
+
+
+static int
+kernel_set_vmem_protection_unlocked(int pid, unsigned long addr, unsigned long len, int prot) {
   unsigned char vm_prot = prot;
   unsigned long vm_entry;
   unsigned long start;
@@ -1499,12 +1586,12 @@ kernel_set_vmem_protection(int pid, unsigned long addr, unsigned long len, int p
     SET_ERRNO(EINVAL);
     return -1;
   }
-  if(!(vm_entry=kernel_get_vmem_entry(pid, addr))) {
+  if(!(vm_entry=kernel_get_vmem_entry_unlocked(pid, addr))) {
     return -1;
   }
 
   while(vm_entry) {
-    if(kernel_copyout(vm_entry + 0x20, &start, sizeof(start))) {
+    if(kernel_copyout_unlocked(vm_entry + 0x20, &start, sizeof(start))) {
       return -1;
     }
 
@@ -1513,11 +1600,11 @@ kernel_set_vmem_protection(int pid, unsigned long addr, unsigned long len, int p
     }
     first = 0;
 
-    if(kernel_copyin(&vm_prot, vm_entry + 0x64, sizeof(vm_prot))) {
+    if(kernel_copyin_unlocked(&vm_prot, vm_entry + 0x64, sizeof(vm_prot))) {
       return -1;
     }
 
-    if(kernel_copyout(vm_entry + 0x08, &vm_entry, sizeof(vm_entry))) {
+    if(kernel_copyout_unlocked(vm_entry + 0x08, &vm_entry, sizeof(vm_entry))) {
       return -1;
     }
   }
@@ -1527,8 +1614,24 @@ kernel_set_vmem_protection(int pid, unsigned long addr, unsigned long len, int p
 
 
 int
+kernel_set_vmem_protection(int pid, unsigned long addr, unsigned long len, int prot) {
+  int ret;
+
+  kernel_pipe_lock_acquire();
+  ret = kernel_set_vmem_protection_unlocked(pid, addr, len, prot);
+  kernel_pipe_lock_release();
+  return ret;
+}
+
+
+int
 kernel_mprotect(int pid, unsigned long addr, unsigned long len, int prot) {
-  return kernel_set_vmem_protection(pid, addr, len, prot);
+  int ret;
+
+  kernel_pipe_lock_acquire();
+  ret = kernel_set_vmem_protection_unlocked(pid, addr, len, prot);
+  kernel_pipe_lock_release();
+  return ret;
 }
 
 

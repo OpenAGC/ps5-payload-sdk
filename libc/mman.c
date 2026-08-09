@@ -78,11 +78,16 @@ mprotect(const void* addr, size_t size, int prot) {
     return sys_mprotect(addr, size, prot);
   }
 
+  errno = 0;
   if(!kernel_mprotect(-1, (intptr_t)addr, size, prot)) {
     return 0;
   }
 
-  errno = EPERM;
+  /* kernel_mprotect sets errno for its checked failures.  Keep that detail
+   * for callers; old payloads may still return an error without setting it. */
+  if(!errno) {
+    errno = EPERM;
+  }
   return -1;
 }
 
@@ -101,9 +106,11 @@ mmap(void* addr, size_t size, int prot, int flags, int fd, off_t offset) {
   }
 
   prot |= PROT_EXEC;
+  errno = 0;
   if(kernel_mprotect(-1, (intptr_t)map_addr, size, prot)) {
+    int error = errno;
     munmap(map_addr, size);
-    errno = EPERM;
+    errno = error ? error : EPERM;
     return MAP_FAILED;
   }
 
