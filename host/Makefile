@@ -32,15 +32,61 @@ TOOLS := bin/prospero-cmake \
          bin/prospero-pkg-config \
          bin/prospero-nid \
          bin/prospero-fetchpkg \
-         bin/prospero-cross-fix-root
+         bin/prospero-cross-fix-root \
+         bin/prospero-pkg
+
+PROSPERO_PKG_DIR := prosperopkg
+PROSPERO_PKG_KEYS := $(PROSPERO_PKG_DIR)/keys/passcode.bin \
+	$(PROSPERO_PKG_DIR)/keys/mount_image.bin \
+	$(PROSPERO_PKG_DIR)/keys/pkg_meta_rsa_key.pem
+PROSPERO_PKG_DATA := $(PROSPERO_PKG_DIR)/data/right.sprx
+PROSPERO_PKG_LIBRARY_SOURCES := $(PROSPERO_PKG_DIR)/src/aes_xts.cpp \
+	$(PROSPERO_PKG_DIR)/src/build.cpp \
+	$(PROSPERO_PKG_DIR)/src/content_id.cpp \
+	$(PROSPERO_PKG_DIR)/src/crc32c.cpp \
+	$(PROSPERO_PKG_DIR)/src/hash.cpp \
+	$(PROSPERO_PKG_DIR)/src/image_digests.cpp \
+	$(PROSPERO_PKG_DIR)/src/pfsc.cpp \
+	$(PROSPERO_PKG_DIR)/src/pfs_image.cpp \
+	$(PROSPERO_PKG_DIR)/src/pfs_layout.cpp \
+	$(PROSPERO_PKG_DIR)/src/pfs_standalone.cpp \
+	$(PROSPERO_PKG_DIR)/src/naps.cpp \
+	$(PROSPERO_PKG_DIR)/src/outer_pfs.cpp \
+	$(PROSPERO_PKG_DIR)/src/pfs_keys.cpp \
+	$(PROSPERO_PKG_DIR)/src/pkg.cpp \
+	$(PROSPERO_PKG_DIR)/src/self.cpp \
+	$(PROSPERO_PKG_DIR)/src/si.cpp
+PROSPERO_PKG_SOURCES := $(PROSPERO_PKG_DIR)/packager.cpp $(PROSPERO_PKG_LIBRARY_SOURCES)
+PROSPERO_PKG_TEST_SOURCES := $(PROSPERO_PKG_DIR)/tests/regression.cpp $(PROSPERO_PKG_LIBRARY_SOURCES)
+
+HOST_CXX ?= c++
+PROSPERO_PKG_CXXFLAGS := -std=c++20 -O2 -DNDEBUG -DPROSPEROPKG_HAS_ZLIB=1 \
+	-I$(PROSPERO_PKG_DIR)/include
+ifeq ($(shell uname -s),Darwin)
+BOOST_PREFIX ?= /opt/homebrew
+endif
+PROSPERO_PKG_CXXFLAGS += $(if $(BOOST_PREFIX),-I$(BOOST_PREFIX)/include)
+PROSPERO_PKG_LDLIBS ?= -lz
 
 LDSCRIPTS := elf_x86_64.x
 
-.PHONY: all clean install
+.PHONY: all clean install test
 
-all:
+all: bin/prospero-pkg
 
-install: install-tools install-symlinks install-ldscripts install-toolchains
+bin/prospero-pkg: $(PROSPERO_PKG_SOURCES)
+	$(HOST_CXX) $(PROSPERO_PKG_CXXFLAGS) $(PROSPERO_PKG_SOURCES) $(PROSPERO_PKG_LDLIBS) -o $@
+
+bin/prospero-pkg-tests: $(PROSPERO_PKG_TEST_SOURCES)
+	$(HOST_CXX) $(PROSPERO_PKG_CXXFLAGS) $(PROSPERO_PKG_TEST_SOURCES) $(PROSPERO_PKG_LDLIBS) -o $@
+
+test: bin/prospero-pkg-tests
+	PROSPERO_PKG_KEYS_DIR=$(PROSPERO_PKG_DIR)/keys ./bin/prospero-pkg-tests
+
+clean:
+	rm -f bin/prospero-pkg bin/prospero-pkg-tests
+
+install: install-tools install-symlinks install-ldscripts install-toolchains install-prosperopkg-keys install-prosperopkg-data
 
 install-ldscripts: $(LDSCRIPTS)
 	install -d $(DESTDIR)
@@ -59,6 +105,14 @@ install-tools: $(TOOLS)
 	install -d $(DESTDIR)
 	install -d $(DESTDIR)/bin
 	install $^ $(DESTDIR)/bin
+
+install-prosperopkg-keys: $(PROSPERO_PKG_KEYS)
+	install -d $(DESTDIR)/share/prosperopkg/keys
+	install -m 0644 $^ $(DESTDIR)/share/prosperopkg/keys
+
+install-prosperopkg-data: $(PROSPERO_PKG_DATA)
+	install -d $(DESTDIR)/share/prosperopkg
+	install -m 0644 $^ $(DESTDIR)/share/prosperopkg/right.sprx
 
 install-symlinks:
 	install -d $(DESTDIR)

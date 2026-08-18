@@ -14,13 +14,13 @@ On Debian-flavored operating systems, you can invoke the following commands to
 install dependencies used by the SDK.
 ```console
 john@localhost:ps5-payload-dev/sdk$ sudo apt-get update && sudo apt-get upgrade # optional
-john@localhost:ps5-payload-dev/sdk$ sudo apt-get install bash clang-18 lld-18 # required
+john@localhost:ps5-payload-dev/sdk$ sudo apt-get install bash clang-18 lld-18 zlib1g-dev # required
 john@localhost:ps5-payload-dev/sdk$ sudo apt-get install socat cmake meson pkg-config # optional
 ```
 
 If you are using Fedora, you can install dependencies as follows (tested with version 41):
 ```console
-john@localhost:ps5-payload-dev/sdk$ sudo dnf install bash llvm-devel clang lld # required
+john@localhost:ps5-payload-dev/sdk$ sudo dnf install bash llvm-devel clang lld zlib-devel # required
 john@localhost:ps5-payload-dev/sdk$ sudo dnf install socat cmake meson pkg-config # optional
 ```
 
@@ -48,6 +48,40 @@ john@localhost:ps5-payload-dev/sdk$ make -C samples/hello_world
 john@localhost:ps5-payload-dev/sdk$ export PS5_HOST=ps5; export PS5_PORT=9021
 john@localhost:ps5-payload-dev/sdk$ make -C samples/hello_world test
 ```
+
+The host install also provides `prospero-pkg`, which converts a 64-bit SDK ELF
+to a fake `eboot.bin` SELF and builds a PS5 debug `.pkg` in one step. The input
+may be an ELF/SELF file or an app directory containing `eboot.bin` or
+`eboot.elf` (and optional `sce_sys` assets):
+```console
+john@localhost:app$ prospero-pkg payload.elf app.pkg \
+    UP0000-FAKE02932_00-0000000000000000 \
+    --title "My payload" --title-id FAKE02932 \
+    --eboot-output eboot.bin
+```
+The default passcode is 32 zeroes, matching the debug package workflow. Use
+`--passcode`, `--version`, and `--compression none|zlib|kraken` for the other
+LibProsperoPkg build options. When `sce_sys/about/right.sprx` is not supplied,
+the builder injects the bundled reference debug module from
+`$PS5_PAYLOAD_SDK/share/prosperopkg/right.sprx` (or the path in
+`$PROSPERO_PKG_RIGHT_SPRX`). A missing reference resource is reported as an
+error instead of silently producing a different package. The package builder is vendored under
+`host/prosperopkg` and remains GPLv3+ like the SDK.
+
+This is the current native LibProsperoPkg-seregonwar builder baseline. The
+inner PS5 PFS layout is ported from SharpProspero's non-signed v2 builder,
+including its superblock, D32 inode table, flat-path table, directory entries,
+and block placement. The package path uses the data-first layout and emits a
+native `naps_pkg_layout.dat` descriptor alongside the encrypted outer PFS
+wrapper with its D32 inode table, FLT/dirent tables, block digests, and
+superblock ICV. CNT/FIH metadata, reference-key RSA sealing, and digest
+rollups are generated for the debug format, and debug FIH images include the
+trailing STORED SI install-metadata ZIP (`naps_meta_18`, `naps_meta_300/301/302/308`,
+`pfsimage.xml`, the PlayGo copy, and per-64 KiB CRCs). If `sce_sys/keystone` is absent it
+is generated from the passcode using the PS5 debug HMAC construction. Ordinary inner files and metadata
+use native PFSv3 Kraken compression when the SharpProspero 15/16 threshold is
+met; executable modules and `sce_sys/keystone` remain raw. No PS5 console
+validation has been performed, so treat the generated `.pkg` as experimental.
 
 ## Building the SDK
 ```console

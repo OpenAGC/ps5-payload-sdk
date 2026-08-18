@@ -1,0 +1,59 @@
+LibProsperoPkg C++ rewrite/fork
+Original C# LibProsperoPkg by SvenGDK
+C++ rewrite/port and native tools Copyright (C) 2026 seregonwar
+
+This program is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software Foundation,
+either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with this
+program. If not, see <https://www.gnu.org/licenses/>.
+
+------------------------------------------------------------------------
+Attribution
+------------------------------------------------------------------------
+
+The original LibProsperoPkg C# project was created by SvenGDK.
+
+The cross-platform C++ rewrite/port under src/, including the native
+library, CMake build, command-line tools, and native tests, is authored by
+seregonwar.
+
+------------------------------------------------------------------------
+Third-party components
+------------------------------------------------------------------------
+
+The legacy C# reference code depends on the following package at build/run time:
+
+  * Magick.NET-Q8-AnyCPU - Apache License 2.0
+
+------------------------------------------------------------------------
+Derived code
+------------------------------------------------------------------------
+
+src/include/prosperopkg/psxpkg.h is a standalone GPL-3.0-or-later
+reference reader authored by seregonwar. It is kept as optional reference
+code for this fork and is not currently linked into the CMake native
+library or command-line tools.
+
+src/include/prosperopkg/lzn_block.hpp and src/src/lzn_block.cpp are a cleaned,
+renamed, GPL-3.0-or-later rework by seregonwar of his earlier block-codec
+design. The active version removes the old project-specific naming, drops
+mandatory third-party compression backends, and targets LibProsperoPkg's LZN
+compression experiments.
+
+legacy/csharp/src/LibProsperoPkg/PFS/Compression/Oodle/ is retained only as
+part of the archived C# reference implementation by SvenGDK. That legacy
+Kraken/newLZ code appears to have been informed by Powzix's "ooz" project
+(<https://github.com/powzix/ooz>), whose public repository does not currently
+publish a clear license notice. The active C++ rewrite under src/ must not
+copy, translate, or vendor code from that legacy Oodle folder or from ooz
+unless a compatible license is confirmed.
+
+Any native Kraken/newLZ implementation added to src/ is expected to be a new
+clean-room implementation authored for this fork, validated with independent
+fixtures and behavior tests rather than copied source.
