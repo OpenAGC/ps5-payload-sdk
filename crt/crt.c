@@ -14,6 +14,7 @@ You should have received a copy of the GNU General Public License
 along with this program; see the file COPYING. If not, see
 <http://www.gnu.org/licenses/>.  */
 
+#include "boot_trace.h"
 #include "kernel.h"
 #include "klog.h"
 #include "patch.h"
@@ -55,12 +56,19 @@ payload_init(payload_args_t *args) {
   if((error=__crt_syscall_init(args))) {
     return error;
   }
+  CRT_BOOT_TRACE("syscall.ready", args);
+  CRT_BOOT_TRACE("kernel.begin", 0);
   if((error=__kernel_init(args))) {
+    CRT_BOOT_TRACE("kernel.error", error);
     return error;
   }
+  CRT_BOOT_TRACE("kernel.end", 0);
+  CRT_BOOT_TRACE("klog.begin", 0);
   if((error=__klog_init())) {
+    CRT_BOOT_TRACE("klog.error", error);
     return error;
   }
+  CRT_BOOT_TRACE("klog.end", 0);
 
   if(!KERNEL_DLSYM(0x2, __isthreaded)) {
     klog_puts("Unable to resolve the symbol '__isthreaded'");
@@ -68,15 +76,21 @@ payload_init(payload_args_t *args) {
   }
   *__isthreaded = 1;
 
+  CRT_BOOT_TRACE("patch.begin", 0);
   if((error=__patch_init())) {
+    CRT_BOOT_TRACE("patch.error", error);
     klog_puts("Unable to initialize patches");
     return error;
   }
+  CRT_BOOT_TRACE("patch.end", 0);
+  CRT_BOOT_TRACE("rtld.begin", 0);
   if((error=__rtld_init())) {
+    CRT_BOOT_TRACE("rtld.error", error);
     klog_puts("Unable to initialize rtld");
     return error;
   }
 
+  CRT_BOOT_TRACE("rtld.end", 0);
   return 0;
 }
 
@@ -113,25 +127,38 @@ payload_run(void) {
     }
   }
 
+  CRT_BOOT_TRACE("payload.new.begin", 0);
   if(!(lib=__rtld_payload_new(__progname))) {
+    CRT_BOOT_TRACE("payload.new.error", 0);
     return -1;
   }
+  CRT_BOOT_TRACE("payload.new.end", lib);
 
   __rtld_dlfcn_setroot(lib);
+  CRT_BOOT_TRACE("payload.open.begin", 0);
   if((err=__rtld_lib_open(lib))) {
+    CRT_BOOT_TRACE("payload.open.error", err);
     __rtld_lib_destroy(lib);
     return err;
   }
 
+  CRT_BOOT_TRACE("payload.open.end", 0);
+
   // run .init constructors
+  CRT_BOOT_TRACE("constructors.begin", 0);
   if((err=__rtld_lib_init(lib, argc, argv, environ))) {
+    CRT_BOOT_TRACE("constructors.error", err);
     __rtld_lib_close(lib);
     __rtld_lib_destroy(lib);
     return err;
   }
 
+  CRT_BOOT_TRACE("constructors.end", 0);
+
   // run the actual payload
+  CRT_BOOT_TRACE("main.begin", 0);
   err = main(argc, argv, environ);
+  CRT_BOOT_TRACE("main.end", err);
   if(payload_args->payloadout) {
     *payload_args->payloadout = err;
   }

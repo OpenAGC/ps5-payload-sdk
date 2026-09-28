@@ -17,6 +17,7 @@ along with this program; see the file COPYING. If not, see
 #include "elf.h"
 #include "kernel.h"
 #include "kernel_iommu.h"
+#include "boot_trace.h"
 #include "nid.h"
 #include "syscall.h"
 
@@ -273,9 +274,16 @@ kernel_find_iommu_softc(void) {
   unsigned long softc;
   unsigned long kaddr;
   unsigned long paddr;
+#if defined(PS5_PAYLOAD_CRT_TRACE) && PS5_PAYLOAD_CRT_TRACE
+  unsigned long slots = 0;
+#endif
 
   for(kaddr=KERNEL_ADDRESS_ALLPROC; kaddr>=KERNEL_ADDRESS_DATA_BASE+8; kaddr-=8) {
+#if defined(PS5_PAYLOAD_CRT_TRACE) && PS5_PAYLOAD_CRT_TRACE
+    slots++;
+#endif
     if(kernel_copyout(kaddr, &softc, sizeof(softc))) {
+      CRT_BOOT_TRACE("iommu.scan.read-error", kaddr);
       return 0;
     }
     if(!kernel_is_heap_addr(softc)) {
@@ -285,10 +293,12 @@ kernel_find_iommu_softc(void) {
       continue;
     }
     if(paddr == 0xfdd80000UL) {
+      CRT_BOOT_TRACE("iommu.scan.slots", slots);
       return softc;
     }
   }
 
+  CRT_BOOT_TRACE("iommu.scan.exhausted", slots);
   return 0;
 }
 
@@ -341,6 +351,7 @@ __kernel_init(payload_args_t* args) {
   if(!(KERNEL_ADDRESS_DATA_BASE=args->kdata_base_addr)) {
     return -EFAULT;
   }
+  CRT_BOOT_TRACE("kernel.args", pipe_addr);
 
   switch(kernel_get_fw_version() & 0xffff0000) {
   case 0x1000000:
@@ -615,20 +626,30 @@ __kernel_init(payload_args_t* args) {
   KERNEL_ADDRESS_TARGETID     = KERNEL_ADDRESS_SECURITY_FLAGS + 0x09;
   KERNEL_ADDRESS_QA_FLAGS     = KERNEL_ADDRESS_SECURITY_FLAGS + 0x24;
   KERNEL_ADDRESS_UTOKEN_FLAGS = KERNEL_ADDRESS_SECURITY_FLAGS + 0x8C;
+  CRT_BOOT_TRACE("prison.begin", 0);
   KERNEL_ADDRESS_PRISON0      = kernel_get_ucred_prison(0);
+  CRT_BOOT_TRACE("prison.end", KERNEL_ADDRESS_PRISON0);
 
+  CRT_BOOT_TRACE("dmap.begin", 0);
   if(!(KERNEL_ADDRESS_DMAP_BASE=kernel_find_dmap_base())) {
+    CRT_BOOT_TRACE("dmap.error", 0);
     return -ENOSYS;
   }
+  CRT_BOOT_TRACE("dmap.end", KERNEL_ADDRESS_DMAP_BASE);
+  CRT_BOOT_TRACE("iommu.scan.begin", KERNEL_ADDRESS_ALLPROC);
   if(!(KERNEL_ADDRESS_IOMMU_SOFTC=kernel_find_iommu_softc())) {
+    CRT_BOOT_TRACE("iommu.scan.error", 0);
     return -ENOSYS;
   }
+  CRT_BOOT_TRACE("iommu.scan.end", KERNEL_ADDRESS_IOMMU_SOFTC);
 
+  CRT_BOOT_TRACE("errno.resolve.begin", 0);
   if(!KERNEL_DLSYM(0x1, __error)) {
     if(!KERNEL_DLSYM(0x2001, __error)) {
       return -1;
     }
   }
+  CRT_BOOT_TRACE("errno.resolve.end", __error);
 
   return 0;
 }

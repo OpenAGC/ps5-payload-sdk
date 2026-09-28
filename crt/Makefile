@@ -22,6 +22,11 @@ CFLAGS += -fvisibility-nodllstorageclass=default -Wall -Werror
 CFLAGS += -fms-extensions -Wno-microsoft-anon-tag
 CFLAGS += -O1
 
+# Opt-in bootstrap diagnostics; normal builds have no trace calls or strings.
+ifeq ($(CRT_TRACE),1)
+CFLAGS += -DPS5_PAYLOAD_CRT_TRACE=1
+endif
+
 OBJ := crt.o syscall.o klog.o nid.o kernel.o rtld.o rtld_so.o rtld_sprx.o \
        rtld_payload.o rtld_dlfcn.o mdbg.o patch.o kernel_procio.o \
        kernel_iommu.o _start.o
@@ -51,8 +56,10 @@ crtn.o:
 crt1.o: $(OBJ)
 	$(LD) -m elf_x86_64 -r -o $@ $^
 
+crt.o kernel.o: boot_trace.h
+
 %.o: %.c
-	$(CC) -c $(CFLAGS) -o $@ $^
+	$(CC) -c $(CFLAGS) -o $@ $<
 
 %.o: %.S
 	$(CC) -c $(CFLAGS) -masm=intel -o $@ $^
